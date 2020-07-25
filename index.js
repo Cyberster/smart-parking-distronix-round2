@@ -100,7 +100,7 @@ client.on('message', async function (topic, message) {
 
     // Max wait 30s, then declare as faulty sensor
     let time_diff_s = (Date.now() - timestamp_obj[uuid]) / 1000
-    timestamp_ms = Date.now()
+    timestamp_obj[uuid] = Date.now()
     console.log('time_diff_s: ', time_diff_s, 'seconds')
 
 
