@@ -1,0 +1,2 @@
+While inserting uuid in sensor table,  I missed a character in data.
+So was getting sql errors.
