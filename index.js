@@ -3,18 +3,20 @@ const dotenv = require('dotenv');
 const express = require('express')
 const mysql = require('mysql')
 const mqtt = require('mqtt')
+const fs = require('fs')
 
 // Initialize environment variables
-dotenv.config({ path: './config.env' });
+dotenv.config({ path: __dirname + '/config.env' });
 
-let sensor_timeout = 30 // TODO: replace with process.env.SENSOR_TIMEOUT
+let sensor_timeout = process.env.SENSOR_TIMEOUT
 
 const db = require('./db')
 
 // Initialize mqtt client
 const client  = mqtt.connect('mqtt://broker.hivemq.com')
 
-console.log('Initializing...')
+console.log('Initializing server...')
+
 
 // Import routes
 const sensorRouter 	= require('./routes/sensorRoutes')
@@ -64,72 +66,133 @@ app.use((req, res) => {
 
 
 
+let sensor_uuids = {}
+let file = fs.readFile('sensors.json', function(err, data) {
+    if (err) return
 
-let sensor_uuids = ['c6fe7f8e-9af6-476b-b226-db637e007499', '44d5ee0d-16a6-44ad-8e4b-c8c84e3595f2']
+    sensor_uuids = JSON.parse(data.toString())
 
-client.on('connect', function () {
-    sensor_uuids.forEach(function(sensor_uuid) {
-        let topic = 'distronix/parking/metrics/' + sensor_uuid
-        client.subscribe(topic, function (err) {
-            if (!err) {
-                client.publish(topic, 'error')
+    client.on('connect', function () {
+        sensor_uuids.forEach(function(sensor_uuid) {
+            let topic = 'distronix/parking/metrics/' + sensor_uuid
+
+            client.subscribe(topic, function (err) {
+                if (!err) {
+                    // client.publish(topic, 'error')
+                    console.log('Unable to subscribe to the topic:', topic)
+                }
+            })
+
+            topic = 'distronix/parking/alerts/' + sensor_uuid
+
+            client.subscribe(topic, function (err) {
+                if (!err) {
+                    // client.publish(topic, 'error')
+                    console.log('Unable to subscribe to the topic:', topic)
+                }
+            })
+        });
+    })
+
+    // client.on('offline', async function (topic, message) {
+    //     console.log(topic, message)
+    // })
+    // client.on('close', async function (topic, message) {
+    //     console.log(topic, message)
+    // })
+    // client.on('error', async function (topic, message) {
+    //     console.log(topic, message)
+    // })
+    // client.on('end', async function (topic, message) {
+    //     console.log(topic, message)
+    // })
+
+    let obj = {
+        sec_elapse: 0,
+        is_occupied: 0,
+        is_faulty: 0,
+        timestamp: Date.now()
+    }
+    let sensor_data = sensor_uuids.reduce((a, b) => (a[b] = obj, a), {});
+    console.log(sensor_data)
+    //let timestamp_ms = Date.now()
+
+
+    // https://stackoverflow.com/a/53932648
+    function isSensorActive() {
+        sensor_uuids.forEach(async function(sensor_uuid) {
+            if (sensor_data[sensor_uuid].sec_elapse == sensor_timeout) {
+                sensor_data[sensor_uuid].sec_elapse = 0
+                
+                // update db
+                console.log('sensor_data:', sensor_data)
+
+                let is_occupied = sensor_data[sensor_uuid].is_occupied // Last good known data
+                let is_faulty = 1 // Faulty sensor
+                let timestamp = new Date() // current timestamp
+
+                try {
+                    // 1. Update sensor table
+                    let sensor_result = await db.updateSensorByUUID(sensor_uuid, is_occupied, is_faulty)
+                    console.log('sensor_result: ', sensor_result)
+        
+                    // 2. Add data to status table
+                    let status_result = await db.addStatusByUUID(sensor_uuid, timestamp, is_occupied, is_faulty)
+                    console.log('status_result: ', status_result)
+                    //res.json(result)
+                } catch (e) {
+                    console.log(e)
+                    //res.sendStatus(500)
+                }
+
+                topic = 'distronix/parking/alerts/' + sensor_uuid
+                client.publish(topic, 'Error: Faulty sensor!')
+            } else {
+                sensor_data[sensor_uuid].timestamp = new Date()
+                sensor_data[sensor_uuid].sec_elapse++
             }
         })
 
-        topic = 'distronix/parking/alerts/' + sensor_uuid
-        client.subscribe(topic, function (err) {
-            if (!err) {
-                client.publish(topic, 'error')
-            }
-        })
-    });
-})
-
-
-let timestamp_obj = sensor_uuids.reduce((a, b) => (a[b] = Date.now(), a),{});
-//let timestamp_ms = Date.now()
-
-client.on('message', async function (topic, message) {
-    // message is Buffer
-    console.log('topic: ', topic, 'message: ', message.toString(), message)
-    //client.end()
-
-    // Extract uuid from topic
-    let parts = topic.split('/')
-    let uuid = parts[parts.length - 1]
-
-    // Max wait 30s, then declare as faulty sensor
-    let time_diff_s = (Date.now() - timestamp_obj[uuid]) / 1000
-    timestamp_obj[uuid] = Date.now()
-    console.log('time_diff_s: ', time_diff_s, 'seconds')
-
-
-
-
-    let is_occupied = (message == 'true')
-    let is_faulty = (time_diff_s > sensor_timeout ? true : false) // after 30 sec, set it to 1
-    let timestamp = new Date()
-
-    console.log('uuid:', uuid)
-    console.log('is_occupied: ', is_occupied, 'is_faulty: ', is_faulty, 'timestamp: ', timestamp)
-
-
-    if (is_faulty && topic === 'distronix/parking/alerts/' + uuid) {
-        client.publish(topic, 'error')
+        // console.log('isSensorActive:', Date.now(), 'sensor_data:', sensor_data)
+        console.log('sensor_data:', sensor_data)
     }
+    setInterval(async () => {
+        await isSensorActive()
+    }, 1000);
 
 
-    try {
-        // 1. Update sensor table
-        let sensor_result = await db.updateSensorByUUID(uuid, is_occupied, is_faulty)
-        console.log('sensor_result: ', sensor_result)
+    client.on('message', async function (topic, message) {
+        // message is Buffer
+        console.log('topic: ', topic, 'message: ', message.toString(), message)
+        //client.end()
 
-        // 2. Add data to status table
-        let status_result = await db.addStatusByUUID(uuid, timestamp, is_occupied, is_faulty)
-        console.log('status_result: ', status_result)
-		//res.json(result)
-    } catch (e) {
-        console.log(e)
-        //res.sendStatus(500)
-    }
+        // Extract uuid from topic
+        let parts = topic.split('/')
+        let uuid = parts[parts.length - 1]
+
+        let is_occupied = (message == 'true')
+        let is_faulty = 0 // Getting signal, so not faulty sensor
+        let timestamp = new Date() // current timestamp
+
+        console.log('uuid:', uuid)
+        console.log('is_occupied: ', is_occupied, 'is_faulty: ', is_faulty, 'timestamp: ', timestamp)
+
+        sensor_data[uuid].is_occupied = is_occupied
+        sensor_data[uuid].is_faulty = is_faulty
+        sensor_data[uuid].timestamp = timestamp
+
+        try {
+            // 1. Update sensor table
+            let sensor_result = await db.updateSensorByUUID(uuid, is_occupied, is_faulty)
+            console.log('sensor_result: ', sensor_result)
+
+            // 2. Add data to status table
+            let status_result = await db.addStatusByUUID(uuid, timestamp, is_occupied, is_faulty)
+            console.log('status_result: ', status_result)
+            //res.json(result)
+        } catch (e) {
+            console.log(e)
+            //res.sendStatus(500)
+        }
+    })
 })

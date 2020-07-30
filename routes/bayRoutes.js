@@ -100,8 +100,10 @@ bayRouter.get('/:lot_name/:bay_name/status', async (req, res, next) => {
         console.log('is_faulty', result.data.is_faulty)
         console.log('is_occupied', result.data.is_occupied)
 
+
         if (result.data.is_faulty) {
             res.sendStatus(410)
+            //res.sendStatus(410).json(result)
         } else {
 
             // res.json(result.data.is_occupied)
