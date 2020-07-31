@@ -22,7 +22,8 @@ console.log('Initializing server...')
 const sensorRouter 	= require('./routes/sensorRoutes')
 const statusRouter 	= require('./routes/statusRoutes')
 const lotRouter 	= require('./routes/lotRoutes')
-const bayRouter 	= require('./routes/bayRoutes')
+const bayRouter 	= require('./routes/bayRoutes');
+const { time } = require('console');
 
 // Initialize app variable
 const app = express()
@@ -83,14 +84,14 @@ let file = fs.readFile('sensors.json', function(err, data) {
                 }
             })
 
-            topic = 'distronix/parking/alerts/' + sensor_uuid
+            // topic = 'distronix/parking/alerts/' + sensor_uuid
 
-            client.subscribe(topic, function (err) {
-                if (!err) {
-                    // client.publish(topic, 'error')
-                    console.log('Unable to subscribe to the topic:', topic)
-                }
-            })
+            // client.subscribe(topic, function (err) {
+            //     if (!err) {
+            //         // client.publish(topic, 'error')
+            //         console.log('Unable to subscribe to the topic:', topic)
+            //     }
+            // })
         });
     })
 
@@ -121,7 +122,7 @@ let file = fs.readFile('sensors.json', function(err, data) {
     // https://stackoverflow.com/a/53932648
     function isSensorActive() {
         sensor_uuids.forEach(async function(sensor_uuid) {
-            if (sensor_data[sensor_uuid].sec_elapse == sensor_timeout) {
+            if (sensor_data[sensor_uuid].sec_elapse >= sensor_timeout) {
                 sensor_data[sensor_uuid].sec_elapse = 0
                 
                 // update db
@@ -131,6 +132,9 @@ let file = fs.readFile('sensors.json', function(err, data) {
                 let is_faulty = 1 // Faulty sensor
                 let timestamp = new Date() // current timestamp
 
+                sensor_data[sensor_uuid].is_faulty = is_faulty
+                sensor_data[sensor_uuid].timestamp = timestamp
+
                 try {
                     // 1. Update sensor table
                     let sensor_result = await db.updateSensorByUUID(sensor_uuid, is_occupied, is_faulty)
@@ -139,14 +143,17 @@ let file = fs.readFile('sensors.json', function(err, data) {
                     // 2. Add data to status table
                     let status_result = await db.addStatusByUUID(sensor_uuid, timestamp, is_occupied, is_faulty)
                     console.log('status_result: ', status_result)
-                    //res.json(result)
+
+                    // 3. publish message to the broker
+                    topic = 'distronix/parking/alerts/' + sensor_uuid
+                    client.publish(topic, 'Error: Faulty sensor!')
+
+                    //console.log('sensor_data:', sensor_data)
+                    console.log('uuid:', sensor_uuid, 'is_occupied', is_occupied, 'is_faulty', is_faulty, 'timestamp', timestamp)
                 } catch (e) {
                     console.log(e)
                     //res.sendStatus(500)
                 }
-
-                topic = 'distronix/parking/alerts/' + sensor_uuid
-                client.publish(topic, 'Error: Faulty sensor!')
             } else {
                 sensor_data[sensor_uuid].timestamp = new Date()
                 sensor_data[sensor_uuid].sec_elapse++
@@ -154,7 +161,7 @@ let file = fs.readFile('sensors.json', function(err, data) {
         })
 
         // console.log('isSensorActive:', Date.now(), 'sensor_data:', sensor_data)
-        console.log('sensor_data:', sensor_data)
+        //console.log('sensor_data:', sensor_data)
     }
     setInterval(async () => {
         await isSensorActive()
@@ -189,7 +196,6 @@ let file = fs.readFile('sensors.json', function(err, data) {
             // 2. Add data to status table
             let status_result = await db.addStatusByUUID(uuid, timestamp, is_occupied, is_faulty)
             console.log('status_result: ', status_result)
-            //res.json(result)
         } catch (e) {
             console.log(e)
             //res.sendStatus(500)
